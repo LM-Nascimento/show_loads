@@ -63,10 +63,16 @@ class ShowLoadsOperator(bpy.types.Operator):
                 area.tag_redraw()
 
         return {'RUNNING_MODAL'}
+class ShaderInfo:
+	def __init(cls)__
+	cls.is_empty = True
+	cls.shader = None
+	cls.args = {}
 
 class LoadsDecorator:
     is_installed = False
     handlers = []
+	linear_load_shaders = {"x": ShaderInfo(),'y':ShaderInfo(), "z": ShaderInfo()}
 	shader = None
 	shader_type = None
 	shader_args = None
@@ -276,13 +282,33 @@ def get_positions():
 
 
 def get_XYZ_list(activity_list,global_to_local):
-    loads, const, par, sinus = get_load_list(activity_list,global_to_local)
+	""" returns a dict with values for applied loads in each direction
+	 return = {
+	 			"x forces": values_in_this_direction
+	 			"y forces": values_in_this_direction
+	 			"z forces": values_in_this_direction
+	 			"x moments": values_in_this_direction
+	  			"y moments": values_in_this_direction
+	  			"z moments": values_in_this_direction
+		 		}
+	 values_in_this_direction = {
+  								"constant": float,
+					  			"quadratic": float,
+						 		"sinus": float,
+								"polyline": list[(position: float, load: float),(position: float, load: float),...]
+					   			}
+ """
+	loads_dict = get_load_dict(activity_list,global_to_local)
+	const = loads_dict["constant forces"]
+	par = loads_dict["quadradic forces"]
+	sinus = loads_dict["sinus forces"]
+    loads = loads_dict["load configurations"]
     unique_list = getuniquepositionlist(loads)
     final_list = []
     for pos in unique_list:
-        v1,v2 = gettotalvalues(pos,loads)
-        if v1 == v2:
-            final_list.append([pos,v1])
+        value = get_before_and_after(pos,loads)
+        if value["moment before"] == value["moment after"]:
+            final_list.append([pos,value["moment before"]])
         else:
             final_list.append([pos,v1])
             final_list.append([pos,v2])
@@ -291,13 +317,19 @@ def get_XYZ_list(activity_list,global_to_local):
         del final_list[-1]
     return final_list, const, par , sinus
 
-def getuniquepositionlist(loads):
+def getuniquepositionlist(load_config_list):
+	"""return an ordereded list of unique locations based on the load configuration list
+ ex: load_config_list = [[{"pos":1.0,...},{"pos":3.0,...}],
+ 						 [{"pos":2.0,...},{"pos":3.0,...}],
+						 [{"pos":1.5,...},{"pos":2.5,...}]]
+		return = [1.0,1.5,2.0,2.5,3.0]
+ """
     unique = []
-    for loadinfo in loads:
-        for info in loadinfo:
-            if info[0] in unique:
+    for config in load_config_list:
+        for info in config:
+            if info["pos"] in unique:
                 continue
-            unique.append(info[0])
+            unique.append(info["pos])
     unique.sort()
     return unique
 
@@ -306,117 +338,179 @@ def interp1d(l1,l2, pos):
     v = l1[1] + fac*(pos-l1[0])
     return v
 
-def interpolate(pos,loadinfo,st,end):
+def interpolate(pos,loadinfo,start,end,key):
     result = Vector((0,0,0))
     for i in range(3):
-        l1 = [loadinfo[st][0],loadinfo[st][2][i]]
-        l2 = [loadinfo[end][0],loadinfo[end][2][i]]
-        result[i] = interp1d(l1,l2, pos)
+        value1 = [loadinfo[start]["pos"], loadinfo[start][key][i]] #[position, force_component]
+        value2= [loadinfo[end]["pos", loadinfo[end][key][i]] #      [position, force_component]
+        result[i] = interp1d(l1,l2, pos) #             interpolated [position, force_component]
     return result
 
-def gettotalvalues(pos,loads):
-    v1 = Vector((0,0,0))
-    v2 = Vector((0,0,0))
+def get_before_and_after(pos,load_config_list):
+	""" get total values for forces and moments with polilyne distribution
+ 		before and after the position
+ ex: load_config_list = [[{"pos":1.0,...,"forces":(1,0,0),...},{"pos":3.0,...,"forces":(3,0,0),...}],
+ 						 [{"pos":2.0,...,"forces":(1,0,0),...},{"pos":3.0,...,"forces":(1,0,0),...}],
+						 [{"pos":1.5,...,"forces":(1,0,0),...},{"pos":2.5,...,"forces":(1,0,0),...}]]
+	   	pos = 2.0
+		return = {
+  					"force before": (3,0,0),
+	   				"force after": (4,0,0),
+					"moment before: (0,0,0),
+	 				"moment after: (0,0,0)
+	  			}
+ """
+    force_before = Vector((0,0,0))
+    force_after = Vector((0,0,0))
+	moment_before = Vector((0,0,0))
+	moment_after = Vector((0,0,0))
 
-    for loadinfo in loads:
-        if pos < loadinfo[0][0] or pos > loadinfo[-1][0]:
+    for config in load_config_list:
+        if pos < config[0]["pos"] or pos > config[-1]["pos"]:
             continue
-        st = 0
-        end = len(loadinfo)-1
-        while end-st > 0:
-            if pos < loadinfo[st][0] or pos > loadinfo[end][0]:
+        start = 0
+        end = len(config)-1
+        while end-start > 0:
+            if pos < config[start]["pos"] or pos > config[end]["pos"]:
                 break
-            if loadinfo[st][0] == pos:
-                if loadinfo[st][1] in ['start','middle']:
-                    v2 += loadinfo[st][2]
-                elif loadinfo[st][1] in ['end','middle']:
-                    v1 += loadinfo[st][2]
+            if config[start]["pos"] == pos:
+                if config[start]["descr"] in ['start','middle']:
+                    force_after += config[start]["forces"]
+					moment_after += config[start]["moments"]
+                elif config[start]["descr"] in ['end','middle']:
+                    force_before += config[start]["forces"]
+					moment_before += config[start]["moments"]
 
-            elif loadinfo[end][0] == pos:
-                if loadinfo[end][1] in ['start','middle']:
-                    v2 += loadinfo[end][2]
-                elif loadinfo[end][1] in ['end','middle']:
-                    v1 += loadinfo[end][2]
+            elif config[end]["pos"] == pos:
+                if config[end]["descr"] in ['start','middle']:
+                    force_after += config[end]["forces"]
+					moment_after += config[end]["moments"]
+                elif config[end]["descr"] in ['end','middle']:
+                    force_before += config[end]["forces"]
+					moment_before += config[end]["moments"]
 
-            elif end-st == 1:
-                v1 += interpolate(pos,loadinfo,st,end)
-                v2 += interpolate(pos,loadinfo,st,end)
-            st += 1
+            elif end-start == 1:
+                force_before += interpolate(pos,config,start,end,"forces")
+                force_after += interpolate(pos,config,start,end,"forces")
+				moment_before += interpolate(pos,config,start,end,"moments")
+				moment_after += interpolate(pos,config,start,end,"moments")
+            start += 1
             end -=1
-    return v1, v2
+	return_value = {
+  					"force before": force_before,
+	   				"force after": force_after,
+					"moment before": moment_before,
+	 				"moment after": moment_after
+	  			}
+    return return_value
 
-def get_load_list(activity_list,global_to_local):
-    """get load list in the local coordinate"""
-    forcevalues = Vector((0,0,0))
+def get_loads_dict(activity_list,global_to_local):
+    """
+	get load list
+ 	activity_list: list of IfcStructuralCurveAction or IfcStructuralCurveReaction applied in the structural curve member
+	global_to_local: transformation matrix from global coordinates to local coordinetes
+ 	return: dict{
+  				"constant force": Vector,	-> sum of linear loads applied with constant distribution
+  				"constant moment": Vector,	-> sum of linear moments applied with constant distribution
+	   			"quadratic force": Vector,	-> sum of linear loads applied with quadratic distribution
+	   			"quadratic moment": Vector,	-> sum of linear moments applied with quadratic distribution
+	   			"sinus force": Vector,		-> sum of linear loads applied with sinus distribution
+	   			"sinus moment": Vector,		-> sum of linear moments applied with sinus distribution
+	   			"load configuration": list	-> list of load configurations for linear and polyline distributions of linear loads
+	   			}
+	   description of "load configuration":
+	list[							-> one item (list)for each IfcStructuralCurveAction applied in the member with IfcStructuralLoadConfiguration as the applied load
+ 		list[						-> one item (dict) for each item found in the Locations attribute of IfcLoadConfiguration
+   			dict{
+	  			"loc": float,		-> local position along curve length
+	  			"descr": string,	-> describe if the item is at the star, middle or end of the list
+	  			"forces": Vector,	-> linear force applied at that point
+	  			"moments": Vector	-> linear moment applied at that point
+	  			}
+	  		]
+	 	]
+		  """
+    constant_force = Vector((0,0,0))
+	constant_moment = Vector((0,0,0))
+    quadratic_force = Vector((0,0,0))
+	quadratic_moment = Vector((0,0,0))
+    sinus_force = Vector((0,0,0))
+	sinus_moment = Vector((0,0,0))
+    load_configurations = []
+
     momentvalues = Vector((0,0,0))
     constvalues = [forcevalues,momentvalues]
     parabolavalues = [forcevalues,momentvalues]        
     sinusvalues = [forcevalues,momentvalues]
     load_values = []
-    fac = 1
-    lengthunit = [u for u in tool.Ifc.get().by_type("IfcConversionBasedUnit") 
-                  if u.UnitType == 'LENGTHUNIT']
-    if len(lengthunit):
-        string = lengthunit[0].ConversionFactor.ValueComponent.to_string()
-        fac = float(string.split('(')[1].split(')')[0])
-    
+	unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get(),"LENGTHUNIT")
+
+	def get_force_vector(load,transform_matrix):
+		x = 0 if getattr(l, 'LinearForceX', 0) is None else getattr(l, 'LinearForceX', 0)
+		y = 0 if getattr(l, 'LinearForceY', 0) is None else getattr(l, 'LinearForceY', 0)
+		z = 0 if getattr(l, 'LinearForceZ', 0) is None else getattr(l, 'LinearForceZ', 0)
+		return transform_matrix @ Vector((x,y,z))
+	
+	def get_moment_vector(load,transform_matrix):
+		x = 0 if getattr(l, 'LinearMomentX', 0) is None else getattr(l, 'LinearMomentX', 0)
+		y = 0 if getattr(l, 'LinearMomentY', 0) is None else getattr(l, 'LinearMomentY', 0)
+		z = 0 if getattr(l, 'LinearMomentZ', 0) is None else getattr(l, 'LinearMomentZ', 0)
+		return transform_matrix @ Vector((x,y,z))
+	
     for activity in activity_list:
-        load = getattr(activity, 'AppliedLoad', None)
-        global_or_local = getattr(activity, 'GlobalOrLocal', None)
+        load = activity.AppliedLoad
+        global_or_local = activity.GlobalOrLocal
+		reference_frame = 'LOCAL_COORDS'
+		transform_matrix = Matrix.identity()
+		if reference_frame == 'LOCAL_COORDS' and global_or_local != reference_frame:
+			transform_matrix = global_to_local
+		elif reference_frame == 'GLOBAL_COORDS' and global_or_local != reference_frame:
+			transform_matrix = global_to_local.inverted()
         #values for linear loads
-        if load.is_a() == 'IfcStructuralLoadConfiguration':
-            locations = getattr(load, 'Locations', None)
-            loads = [l for l in getattr(load, 'Values', None) 
+        if load.is_a('IfcStructuralLoadConfiguration'):
+            locations = getattr(load, 'Locations', [])
+            values = [l for l in getattr(load, 'Values', None) 
                     if l.is_a() == "IfcStructuralLoadLinearForce"
                     ]
-            loadinfo = []
-            for i,l in enumerate(loads):
-                x = 0 if getattr(l, 'LinearForceX', 0) is None else getattr(l, 'LinearForceX', 0)
-                y = 0 if getattr(l, 'LinearForceY', 0) is None else getattr(l, 'LinearForceY', 0)
-                z = 0 if getattr(l, 'LinearForceZ', 0) is None else getattr(l, 'LinearForceZ', 0)
-                forcevalues = Vector((x,y,z))
-                x = 0 if getattr(l, 'LinearMomentX', 0) is None else getattr(l, 'LinearMomentX', 0)
-                y = 0 if getattr(l, 'LinearMomentY', 0) is None else getattr(l, 'LinearMomentY', 0)
-                z = 0 if getattr(l, 'LinearMomentZ', 0) is None else getattr(l, 'LinearMomentZ', 0)
-                momentvalues = Vector((x,y,z))
+            config_list = []
+            for i,l in enumerate(values):
+                forcevalues = get_force_vector(l)
+                momentvalues = get_moment_vector(l)
                 if i == 0:
                     descr = 'start'
-                elif i == len(loads)-1:
+                elif i == len(values)-1:
                     descr = 'end'
                 else:
                     descr = 'middle'
-                loadinfo.append([locations[i][0]*fac,descr,forcevalues,momentvalues])
-            load_values.append(loadinfo)
+                config_list.append(
+					{"loc": locations[i][0]*unit_scale,
+					 "descr": descr,
+					 "forces":forcevalues,
+					 "moments":momentvalues}
+				)
+            load_configurations.append(config_list)
         else:
-            l = load
-            x = 0 if getattr(l, 'LinearForceX', 0) is None else getattr(l, 'LinearForceX', 0)
-            y = 0 if getattr(l, 'LinearForceY', 0) is None else getattr(l, 'LinearForceY', 0)
-            z = 0 if getattr(l, 'LinearForceZ', 0) is None else getattr(l, 'LinearForceZ', 0)
-            forcevalues = Vector((x,y,z))
-            x = 0 if getattr(l, 'LinearMomentX', 0) is None else getattr(l, 'LinearMomentX', 0)
-            y = 0 if getattr(l, 'LinearMomentY', 0) is None else getattr(l, 'LinearMomentY', 0)
-            z = 0 if getattr(l, 'LinearMomentZ', 0) is None else getattr(l, 'LinearMomentZ', 0)
-            momentvalues = Vector((x,y,z))
+            forcevalues = get_force_vector(load)
+            momentvalues = get_moment_vector(load)
             if 'CONST' == getattr(activity, 'PredefinedType', None):
-                constvalues[0] += forcevalues
-                constvalues[1] += momentvalues
+                constant_force += forcevalues
+                constant_moment += momentvalues
             elif 'PARABOLA' == getattr(activity, 'PredefinedType', None):
-                parabolavalues[0] += forcevalues
-                parabolavalues[1] += momentvalues
+                quadratic_force += forcevalues
+                quadratic_moment += momentvalues
             elif 'SINUS' == getattr(activity, 'PredefinedType', None):
-                sinusvalues[0] += forcevalues
-                sinusvalues[1] += momentvalues
-        if global_or_local == 'GLOBAL':
-            for l in load_values:
-                l[2] = global_to_local @ l[2]
-                l[3] = global_to_local @ l[3]
-            constvalues[0] = global_to_local @constvalues[0]
-            constvalues[1] = global_to_local @constvalues[1]
-            parabolavalues[0] = global_to_local @ parabolavalues[0]
-            parabolavalues[1] = global_to_local @ parabolavalues[1]
-            sinusvalues[0] = global_to_local @ sinusvalues[0]
-            sinusvalues[1] = global_to_local @ sinusvalues[1]
-    return load_values, constvalues,parabolavalues,sinusvalues
+                sinus_force += forcevalues
+                sinus_moment += momentvalues
+    return_value = {
+  				"constant force": constant_force,
+  				"constant moment": constant_moment,
+	   			"quadratic force": quadratic_force,
+	   			"quadratic moment": quadratic_moment,
+	   			"sinus force": sinus_force,
+	   			"sinus moment": sinus_moment,
+	   			"load configuration": load_configurations
+	   			}
+    return return_value
 
 
 def draw_callback(coords, indices, coords_2d, load_info, color):
