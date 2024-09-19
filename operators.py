@@ -31,9 +31,9 @@ import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 
-class LoadDecorator(bpy.types.Operator):
-    """Draw decorations to show strucutural actions"""
-    bl_idname = "bim.show_3d_loads"
+class ShowLoadsOperator(bpy.types.Operator):
+    """Draw decorations to show strucutural actions in 3d view"""
+    bl_idname = "bim.show_loads"
     bl_label = "Show loads in 3D View"
 
     def modal(self, context, event):
@@ -63,6 +63,125 @@ class LoadDecorator(bpy.types.Operator):
                 area.tag_redraw()
 
         return {'RUNNING_MODAL'}
+
+class LoadsDecorator:
+    is_installed = False
+    handlers = []
+	shader = None
+	shader_type = None
+	shader_args = None
+ 	shader_uniforms = None
+    event = None
+    input_type = None
+    input_ui = None
+    angle_snap_mat = None
+    angle_snap_loc = None
+    use_default_container = False
+    instructions = None
+    snap_info = None
+    tool_state = None
+
+    @classmethod
+    def install(cls, context):
+        if cls.is_installed:
+            cls.uninstall()
+        handler = cls()
+        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_load_values, (context,), "WINDOW", "POST_PIXEL"))
+        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_extra_info, (context,), "WINDOW", "POST_PIXEL"))
+        cls.handlers.append(
+            SpaceView3D.draw_handler_add(handler.draw_curve_loads, (context,), "WINDOW", "POST_VIEW")
+        )
+        cls.handlers.append(SpaceView3D.draw_handler_add(handler, (context,), "WINDOW", "POST_VIEW"))
+        cls.is_installed = True
+
+    @classmethod
+    def uninstall(cls):
+        for handler in cls.handlers:
+            try:
+                SpaceView3D.draw_handler_remove(handler, "WINDOW")
+            except ValueError:
+                pass
+        cls.is_installed = False
+
+    @classmethod
+    def update(cls, event, tool_state, input_ui, snapping_point):
+        cls.event = event
+        cls.tool_state = tool_state
+        cls.input_ui = input_ui
+
+	def get_shader(cls, shader_type: str):
+		""" param: shader_type: type of shader in ["DistributedLoad", "PointLoad"]
+  			return: shader"""
+		if shader_type == "DistributedLoad":
+			cls.shader_type = shader_type
+			vert_out = gpu.types.GPUStageInterfaceInfo("my_interface")
+		    vert_out.smooth('VEC3', "colour")
+		    vert_out.smooth('VEC3', "forces")
+		    vert_out.smooth('VEC2', "co")
+		
+		    shader_info = gpu.types.GPUShaderCreateInfo()
+		    shader_info.push_constant('MAT4', "viewProjectionMatrix")
+		    shader_info.push_constant('FLOAT', "spacing")
+		    shader_info.push_constant('FLOAT', "arrow")
+		
+		    shader_info.vertex_in(0, 'VEC3', "position")
+		    shader_info.vertex_in(1, 'VEC3', "color")
+		    shader_info.vertex_in(2, 'VEC3', "sin_quad_lin_forces")
+		    shader_info.vertex_in(3, 'VEC2', "uv_coord")
+		    
+		    shader_info.vertex_out(vert_out)
+		    shader_info.fragment_out(0, 'VEC4', "FragColor")
+		
+		    shader_info.vertex_source(
+		        "void main()"
+		        "{"
+		        "  colour = color;"
+		        "  gl_Position = viewProjectionMatrix * vec4(position, 1.0f);"
+		        "  co = uv_coord;"
+		        "  forces = sin_quad_lin_forces;"
+		        "  gl_Position = viewProjectionMatrix * vec4(position, 1.0f);"
+		        "}"
+		    )
+		
+		
+		    shader_info.fragment_source(
+		    "void main()"
+		    "{"
+		        "float x = co.x;"
+		        "float y = co.y;"
+		        "float abs_y = abs(y);"
+		
+		        "float a = abs(mod(x,spacing)-0.5*spacing)*5.0*arrow/spacing;"
+		        "float b = step(a,abs_y)*(step(abs_y,arrow));"
+		        "float c = step(0.8*spacing,mod(x+0.4*spacing,spacing))*(step(arrow,abs_y));"
+		
+		        "float sinvalue = forces.x;"
+		        "float quadraticvalue = forces.y;"
+		        "float linearvalue = forces.z;"
+		        "float f = sin(x*3.1416)*sinvalue"
+		        	  "+(-4.*x*x+4.*x)*quadraticvalue"
+		        	  "+linearvalue;"
+		        "float mask = step(0.,y)*step(y,f)+step(y,0.)*step(f,y);"
+		    
+		        "float top = step(abs(y-f),0.2*arrow);"
+			    "float d = clamp(0.2+top+b+c,0.0,1.0)*mask;"
+		
+		        "gl_FragColor = vec4(colour,d);"
+		    "}"
+		    )
+		
+		    cls.shader = gpu.shader.create_from_info(shader_info)
+		    del vert_out
+		    del shader_info
+			cls.shader_args = self.get_shader_args()
+
+	def get_shader_args(cls):
+		if cls.shader_type == "DistributedLoad":
+			cls.get_distributed_loads()
+
+	def get_distributed_loads(cls):
+		
+
 
 def location_3d_to_region_2d(coord, context):
     """Convert from 3D space to 2D screen space"""
@@ -303,66 +422,7 @@ def get_load_list(activity_list,global_to_local):
 def draw_callback(coords, indices, coords_2d, load_info, color):
     """Draw forces, restrictions and results to the screen"""
     #shader info
-    vert_out = gpu.types.GPUStageInterfaceInfo("my_interface")
-    vert_out.smooth('VEC3', "colour")
-    vert_out.smooth('VEC3', "forces")
-    vert_out.smooth('VEC2', "co")
-
-    shader_info = gpu.types.GPUShaderCreateInfo()
-    shader_info.push_constant('MAT4', "viewProjectionMatrix")
-    shader_info.push_constant('FLOAT', "spacing")
-    shader_info.push_constant('FLOAT', "arrow")
-
-    shader_info.vertex_in(0, 'VEC3', "position")
-    shader_info.vertex_in(1, 'VEC3', "color")
-    shader_info.vertex_in(2, 'VEC3', "sin_quad_lin_forces")
-    shader_info.vertex_in(3, 'VEC2', "uv_coord")
     
-    shader_info.vertex_out(vert_out)
-    shader_info.fragment_out(0, 'VEC4', "FragColor")
-
-    shader_info.vertex_source(
-        "void main()"
-        "{"
-        "  colour = color;"
-        "  gl_Position = viewProjectionMatrix * vec4(position, 1.0f);"
-        "  co = uv_coord;"
-        "  forces = sin_quad_lin_forces;"
-        "  gl_Position = viewProjectionMatrix * vec4(position, 1.0f);"
-        "}"
-    )
-
-
-    shader_info.fragment_source(
-    "void main()"
-    "{"
-        "float x = co.x;"
-        "float y = co.y;"
-        "float abs_y = abs(y);"
-
-        "float a = abs(mod(x,spacing)-0.5*spacing)*5.0*arrow/spacing;"
-        "float b = step(a,abs_y)*(step(abs_y,arrow));"
-        "float c = step(0.8*spacing,mod(x+0.4*spacing,spacing))*(step(arrow,abs_y));"
-
-        "float sinvalue = forces.x;"
-        "float quadraticvalue = forces.y;"
-        "float linearvalue = forces.z;"
-        "float f = sin(x*3.1416)*sinvalue"
-        	  "+(-4.*x*x+4.*x)*quadraticvalue"
-        	  "+linearvalue;"
-        "float mask = step(0.,y)*step(y,f)+step(y,0.)*step(f,y);"
-    
-        "float top = step(abs(y-f),0.2*arrow);"
-	    "float d = clamp(0.2+top+b+c,0.0,1.0)*mask;"
-
-        "gl_FragColor = vec4(colour,d);"
-    "}"
-    )
-
-    shader = gpu.shader.create_from_info(shader_info)
-    del vert_out
-    del shader_info
-
     #get the locations here
     #coords = [(0, 0, 4), (-1, 0, 5), (2, 0, 4),(1,0,5)]
     #st_info = [(0,0),(0,1),(2,0),(2,1)]
@@ -377,6 +437,7 @@ def draw_callback(coords, indices, coords_2d, load_info, color):
     gpu.state.depth_mask_set(True)
     original_depth_test = gpu.state.depth_test_get()
     gpu.state.depth_test_set('LESS')
+	shader = self.get_shader("DistributedLoad")
     batch = batch_for_shader(shader, 'TRIS', {"position": coords,"color": color, "sin_quad_lin_forces": load_info,"uv_coord": coords_2d},indices=indices)
     
     matrix = bpy.context.region_data.perspective_matrix
