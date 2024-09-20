@@ -26,11 +26,12 @@ import bonsai.tool as tool
 from math import degrees
 from mathutils import Vector, Matrix
 from bonsai.bim.ifc import IfcStore
-import numpy as np
+
 
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
+import numpy as np
 
 class ShowLoadsOperator(bpy.types.Operator):
 	"""Draw decorations to show strucutural actions in 3d view"""
@@ -39,7 +40,7 @@ class ShowLoadsOperator(bpy.types.Operator):
 
 	def modal(self, context, event):
 		if event.type == 'ESC':
-			bpy.types.SpaceView3D.draw_handler_remove(self._handle, 'WINDOW')
+			LoadsDecorator.uninstall()
 			for area in context.screen.areas:
 				if area.type == 'VIEW_3D':
 					area.tag_redraw()
@@ -47,58 +48,31 @@ class ShowLoadsOperator(bpy.types.Operator):
 		return {'PASS_THROUGH'}
 
 	def invoke(self, context, event):
-	
-		# the arguments we pass the the callback
-		coords, indices, coords_2d, load_info, color = get_positions()
-		args = (coords, indices, coords_2d, load_info, color)
-		# Add the region OpenGL drawing callback
-		# draw in view space with 'POST_VIEW' and 'PRE_VIEW'
-		self._handle = bpy.types.SpaceView3D.draw_handler_add(draw_callback,
-																args,
-																'WINDOW',
-																'POST_VIEW'
-																)
+		LoadsDecorator.install()
+		LoadsDecorator.update()
 		context.window_manager.modal_handler_add(self)
 		for area in context.screen.areas:
 			if area.type == 'VIEW_3D':
 				area.tag_redraw()
 
 		return {'RUNNING_MODAL'}
-class ShaderInfo:
-	def __init(cls)__
-	cls.is_empty = True
-	cls.shader = None
-	cls.args = {}
 
 class LoadsDecorator:
 	is_installed = False
 	handlers = []
-	linear_load_shaders = {"x": ShaderInfo(),'y':ShaderInfo(), "z": ShaderInfo()}
-	shader = None
-	shader_type = None
-	shader_args = None
-	shader_uniforms = None
-	event = None
-	input_type = None
-	input_ui = None
-	angle_snap_mat = None
-	angle_snap_loc = None
-	use_default_container = False
-	instructions = None
-	snap_info = None
-	tool_state = None
+	linear_load_shader = ShaderInfo("DistributedLoad")
 
 	@classmethod
 	def install(cls, context):
 		if cls.is_installed:
 			cls.uninstall()
 		handler = cls()
-		cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_load_values, (context,), "WINDOW", "POST_PIXEL"))
-		cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_extra_info, (context,), "WINDOW", "POST_PIXEL"))
-		cls.handlers.append(
-			SpaceView3D.draw_handler_add(handler.draw_curve_loads, (context,), "WINDOW", "POST_VIEW")
-		)
-		cls.handlers.append(SpaceView3D.draw_handler_add(handler, (context,), "WINDOW", "POST_VIEW"))
+		#cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_load_values, (context,), "WINDOW", "POST_PIXEL"))
+		#cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_extra_info, (context,), "WINDOW", "POST_PIXEL"))
+		#cls.handlers.append(
+		#	SpaceView3D.draw_handler_add(handler.draw_curve_loads, (context,), "WINDOW", "POST_VIEW")
+		#)
+		cls.handlers.append(SpaceView3D.draw_handler_add(handler, (), "WINDOW", "POST_VIEW"))
 		cls.is_installed = True
 
 	@classmethod
@@ -111,15 +85,60 @@ class LoadsDecorator:
 		cls.is_installed = False
 
 	@classmethod
-	def update(cls, event, tool_state, input_ui, snapping_point):
-		cls.event = event
-		cls.tool_state = tool_state
-		cls.input_ui = input_ui
+	def update(cls, context):
+		cls.linear_load_shader.update()
 
-	def get_shader(cls, shader_type: str):
-		""" param: shader_type: type of shader in ["DistributedLoad", "PointLoad"]
-  			return: shader"""
+	def __call__(cls):
+		# set open gl configurations
+		original_blend = gpu.state.blend_get()
+		gpu.state.blend_set('ALPHA')
+		original_depth_mask = gpu.state.depth_mask_get()
+		gpu.state.depth_mask_set(True)
+		original_depth_test = gpu.state.depth_test_get()
+		gpu.state.depth_test_set('LESS')
+		
+		cls.draw_batch("DistributedLoad")
+
+		# restore opengl configurations
+		gpu.state.blend_set(original_blend)
+		gpu.state.depth_mask_set(original_depth_mask)
+		gpu.state.depth_test_set(original_depth_test)
+
+	def draw_batch(cls,shader_type: str):
+		""" param: shader_type: type of shader in ["DistributedLoad", "PointLoad"]"""
+		
+		shader = cls.get_shader("DistributedLoad")
 		if shader_type == "DistributedLoad":
+			shader_info = cls.linear_load_shader
+			if not shader_info.is_empty:
+				shader = shader_info.shader
+				args = shader_info.args
+				indices = shader_info.indices
+				batch = batch_for_shader(shader, 'TRIS', args, indices=indices)
+				matrix = bpy.context.region_data.perspective_matrix
+				shader.uniform_float("viewProjectionMatrix", matrix)
+				shader.uniform_float("spacing", 0.2) #todo make it customizable
+				shader.uniform_float("arrow", 20) #todo make it customizable
+				batch.draw(shader)
+
+class ShaderInfo:
+	def __init__(cls,shader_type: str):
+		cls.is_empty = True
+		cls.shader = None
+		cls.shader_type = shader_type
+		cls.args = {}
+		cls.indices = []
+	
+	def update(cls):
+		cls.get_shader()
+		cls.get_args_and_indices()
+		if len(cls.args["position"]):
+			cls.is_empty = False
+		
+	def get_shader(cls):
+	""" param: shader_type: type of shader in ["DistributedLoad", "PointLoad"]
+		return: shader"""
+		if cls.shader_type == "DistributedLoad":
 			cls.shader_type = shader_type
 			vert_out = gpu.types.GPUStageInterfaceInfo("my_interface")
 			vert_out.smooth('VEC3', "colour")
@@ -180,14 +199,110 @@ class LoadsDecorator:
 			cls.shader = gpu.shader.create_from_info(shader_info)
 			del vert_out
 			del shader_info
-			cls.shader_args = cls.get_shader_args()
 
-	def get_shader_args(cls):
-		if cls.shader_type == "DistributedLoad":
-			cls.get_distributed_loads()
+	def get_args_and_indices(): #for now it only works for distributed loads
+		coords = []
+		indices = []
+		load_info = []
+		coords_2d = []
+		color = []
+	
+		list_of_curve_members = tool.Ifc.get().by_type("IfcStructuralCurveMember")
+		for member in list_of_curve_members:
+			activity_list = [getattr(a, 'RelatedStructuralActivity', None) for a in getattr(member, 'AssignedStructuralActivity', None)
+							 if getattr(a, 'RelatedStructuralActivity', None).is_a() == 'IfcStructuralCurveAction']
+			if len(activity_list) == 0:
+				continue
+			# member is a structural curve member
+			# get Axis attribute from member -> (IFCDIRECTION)
+			# get Representation attribute from member -> (IFCPRODUCTDEFINITIONSHAPE)
+			# get Representations attribute from Representation -> (IFCTOPOLOGYREPRESENTATION)
+			# get Items attribute from Representations -> (IFCEDGE)
+			# get EdgeStart attribute from Items -> (IFCVERTEX)
+			# get EdgeEnd attribure from Items -> (IFCVERTEX)
+			# using blender just get the global coordinates of the first and second vertex in the mesh
+	
+			blender_object = IfcStore.get_element(getattr(member, 'GlobalId', None))
+			if blender_object.type == 'MESH':
+				start_co = blender_object.matrix_world @ blender_object.data.vertices[0].co
+				end_co = blender_object.matrix_world @ blender_object.data.vertices[1].co
+			x_axis = Vector(end_co-start_co).normalized()
+			direction = getattr(member, 'Axis', None)
+			#local coordinates
+			z_axis = Vector(getattr(direction, 'DirectionRatios', None)).normalized()
+			y_axis = z_axis.cross(x_axis).normalized()
+			z_axis = x_axis.cross(y_axis).normalized()
+			global_to_local = Matrix(((x_axis.x,y_axis.x,z_axis.x,0),
+									  (x_axis.y,y_axis.y,z_axis.y,0),
+									  (x_axis.z,y_axis.z,z_axis.z,0),
+									  (0,0,0,1)))
+	
+			#get shader args for each direction
+			reference_frame = 'LOCAL_COORDS' #make it a scene property so it can be changed in a panel
+			is_global = assert(reference_frame == 'GLOBAL_COORDS')
+			x_match = assert(x_axis == Vector((1,0,0)))
+			y_match = assert(y_axis == Vector((0,1,0)))
+			z_match = assert(z_axis == Vector((0,0,1)))
+			direction_dict = {
+				"fx": Vector((1,0,0)) if is_global and not x_match else Vector((0,1,1)) if is_global else y_axis+z_axis,
+				"fy": Vector((0,1,0)) if is_global and not y_match else Vector((1,0,1)) if is_global else y_axis,
+				"fz": Vector((0,0,1)) if is_global and not z_match else Vector((1,1,0)) if is_global else z_axis,
+				"mx": Vector((1,0,0)) if is_global and not x_match else Vector((0,1,1)) if is_global else y_axis+z_axis,
+				"my": Vector((0,1,0)) if is_global and not y_match else Vector((1,0,1)) if is_global else y_axis,
+				"mz": Vector((0,0,1)) if is_global and not z_match else Vector((1,1,0)) if is_global else z_axis,
+			}
+			xyzdict = get_loads_per_direction(activity_list,global_to_local)
+			keys = ["fx","fy","fz","mx","my","mz"]
+			maxforce = 200 #should be the maximum value expected for the loads
+			for key in keys:
+				polyline = xyzdict[key]["polyline"]
+				sinus = xyzdict[key]["sinus"]
+				quadratic = xyzdict[key]["quadratic"]
+				constant = xyzdict[key]["constant"]
+				direction = direction_dict[key] #depends on the key and on the frame of reference
+				
+				addindex = len(indices)
+				counter = 0
+				for i in range(len(polyline)-1):
+					current = Vector(polyline[i]+[0])
+					nextitem = Vector(polyline[i+1]+[0])
+	
+					if current[1] != 0 or nextitem[1] != 0: #if there is load in the z direction
+						negative = -direction + start_co + x_axis*current.x
+						positive = direction + start_co + x_axis*current.x
+						coords.append(negative)
+						coords_2d.append((current.x, maxforce))
+						load_info.append((sinus, quadratic, current.y + constant))
+						color.append((0,0,1))
+	
+						coords.append(positive)
+						coords_2d.append((current[0],-maxforce))
+						load_info.append((sinus, quadratic, current.y + constant))
+						color.append((0,0,1))
+	
+						indices.append((0 + counter + addindex,
+										1 + counter + addindex,
+										2 + counter + addindex))
+						indices.append((3 + counter + addindex,
+										1 + counter + addindex,
+										2 + counter + addindex))
+						if i == len(polyline)-2:
+							negative = -direction + start_co + x_axis*nextitem.x
+							positive = direction + start_co + x_axis*nextitem.x
+							coords.append(negative)
+							coords_2d.append((nextitem.x, maxforce))
+							load_info.append((sinus, quadratic, nextitem.y + constant))
+							color.append((0,0,1))
+	
+							coords.append(positive)
+							coords_2d.append((nextitem.x,-maxforce))
+							load_info.append((sinus, quadratic, nextitem.y + constant))
+							color.append((0,0,1))
+	
+						counter += 2
+		cls.args = {"position": coords,"color": color, "sin_quad_lin_forces": load_info,"uv_coord": coords_2d}
+		cls.indices = indices
 
-	def get_distributed_loads(cls):
-		pass
 
 def location_3d_to_region_2d(coord, context):
 	"""Convert from 3D space to 2D screen space"""
@@ -199,98 +314,10 @@ def location_3d_to_region_2d(coord, context):
 	return Vector((width_half + width_half * (prj.x / prj.w),
 				   height_half + height_half * (prj.y / prj.w),
 				   ))
-def get_positions():
-	"""get load positions in 3D View"""
-	coords = []
-	indices = []
-	load_info = []
-	coords_2d = []
-	color = []
-
-	list_of_curve_members = tool.Ifc.get().by_type("IfcStructuralCurveMember")
-	for member in list_of_curve_members:
-		activity_list = [getattr(a, 'RelatedStructuralActivity', None) for a in getattr(member, 'AssignedStructuralActivity', None)
-						 if getattr(a, 'RelatedStructuralActivity', None).is_a() == 'IfcStructuralCurveAction']
-		if len(activity_list) == 0:
-			continue
-		# member is a structural curve member
-		# get Axis attribute from member -> (IFCDIRECTION)
-		# get Representation attribute from member -> (IFCPRODUCTDEFINITIONSHAPE)
-		# get Representations attribute from Representation -> (IFCTOPOLOGYREPRESENTATION)
-		# get Items attribute from Representations -> (IFCEDGE)
-		# get EdgeStart attribute from Items -> (IFCVERTEX)
-		# get EdgeEnd attribure from Items -> (IFCVERTEX)
-		# using blender just get the global coordinates of the first and second vertex in the mesh
-
-		blender_object = IfcStore.get_element(getattr(member, 'GlobalId', None))
-		if blender_object.type == 'MESH':
-			start_co = blender_object.matrix_world @ blender_object.data.vertices[0].co
-			end_co = blender_object.matrix_world @ blender_object.data.vertices[1].co
-		x_axis = Vector(end_co-start_co).normalized()
-		direction = getattr(member, 'Axis', None)
-		#local coordinates
-		z_axis = Vector(getattr(direction, 'DirectionRatios', None)).normalized()
-		y_axis = z_axis.cross(x_axis).normalized()
-		z_axis = x_axis.cross(y_axis).normalized()
-		global_to_local = Matrix(((x_axis.x,y_axis.x,z_axis.x,0),
-								  (x_axis.y,y_axis.y,z_axis.y,0),
-								  (x_axis.z,y_axis.z,z_axis.z,0),
-								  (0,0,0,1)))
-		
-		xyzdict = get_XYZ_list(activity_list,global_to_local)
-		keys = ["fx","fy","fz","mx","my","mz"]
-		maxforce = 200 #should be the maximum value expected for the loads
-		for key in keys:
-			polyline = xyzdict[key]["polyline"]
-			sinus = xyzdict[key]["sinus"]
-			quadratic = xyzdict[key]["quadratic"]
-			constant = xyzdict[key]["constant"]
-			direction = Vector((0,0,1)) #depends on the key and on the frame of reference
-			
-			addindex = len(indices)
-			counter = 0
-			#z direction
-			for i in range(len(polyline)-1):
-				current = Vector(polyline[i]+[0])
-				nextitem = Vector(polyline[i+1]+[0])
-
-				if current[1] != 0 or nextitem[1] != 0: #if there is load in the z direction
-					negative = -direction + start_co + x_axis*current.x
-					positive = direction + start_co + x_axis*current.x
-					coords.append(negative)
-					coords_2d.append((current.x, maxforce))
-					load_info.append((sinus, quadratic, current.y + constant))
-					color.append((0,0,1))
-
-					coords.append(positive)
-					coords_2d.append((current[0],-maxforce))
-					load_info.append((sinus, quadratic, current.y + constant))
-					color.append((0,0,1))
-
-					indices.append((0 + counter + addindex,
-									1 + counter + addindex,
-									2 + counter + addindex))
-					indices.append((3 + counter + addindex,
-									1 + counter + addindex,
-									2 + counter + addindex))
-					if i == len(polyline)-2:
-						negative = -direction + start_co + x_axis*nextitem.x
-						positive = direction + start_co + x_axis*nextitem.x
-						coords.append(negative)
-						coords_2d.append((nextitem.x, maxforce))
-						load_info.append((sinus, quadratic, nextitem.y + constant))
-						color.append((0,0,1))
-
-						coords.append(positive)
-						coords_2d.append((nextitem.x,-maxforce))
-						load_info.append((sinus, quadratic, nextitem.y + constant))
-						color.append((0,0,1))
-
-					counter += 2
-	return coords, indices, coords_2d, load_info, color
 
 
-def get_XYZ_list(activity_list,global_to_local):
+
+def get_loads_per_direction(activity_list,global_to_local):
 	""" returns a dict with values for applied loads in each direction
 	 return = {
 	 			"fx": values_in_this_direction
@@ -313,7 +340,7 @@ def get_XYZ_list(activity_list,global_to_local):
 	sinus = loads_dict["sinus forces"]
 	loads = loads_dict["load configurations"]
 	unique_list = getuniquepositionlist(loads)
-	final_list = np.array([])
+	final_list = []
 	for pos in unique_list:
 		value = get_before_and_after(pos,loads)
 		if value["before"] == value["after"]:
@@ -500,7 +527,7 @@ def get_loads_dict(activity_list,global_to_local):
 	for activity in activity_list:
 		load = activity.AppliedLoad
 		global_or_local = activity.GlobalOrLocal
-		reference_frame = 'LOCAL_COORDS'
+		reference_frame = 'LOCAL_COORDS' #make it a scene property so it can be changed in a panel
 		transform_matrix = Matrix.identity()
 		if reference_frame == 'LOCAL_COORDS' and global_or_local != reference_frame:
 			transform_matrix = global_to_local
@@ -551,36 +578,3 @@ def get_loads_dict(activity_list,global_to_local):
 	   			"load configuration": load_configurations
 	   			}
 	return return_value
-
-
-def draw_callback(coords, indices, coords_2d, load_info, color):
-	"""Draw forces, restrictions and results to the screen"""
-	#shader info
-	
-	#get the locations here
-	#coords = [(0, 0, 4), (-1, 0, 5), (2, 0, 4),(1,0,5)]
-	#st_info = [(0,0),(0,1),(2,0),(2,1)]
-	#indices = ((0,1,2),(1,2,3))
-
-	
-
-	# set open gl configurations
-	original_blend = gpu.state.blend_get()
-	gpu.state.blend_set('ALPHA')
-	original_depth_mask = gpu.state.depth_mask_get()
-	gpu.state.depth_mask_set(True)
-	original_depth_test = gpu.state.depth_test_get()
-	gpu.state.depth_test_set('LESS')
-	shader = self.get_shader("DistributedLoad")
-	batch = batch_for_shader(shader, 'TRIS', {"position": coords,"color": color, "sin_quad_lin_forces": load_info,"uv_coord": coords_2d},indices=indices)
-	
-	matrix = bpy.context.region_data.perspective_matrix
-	shader.uniform_float("viewProjectionMatrix", matrix)
-	shader.uniform_float("spacing", 0.2) #todo make it customizable
-	shader.uniform_float("arrow", 20) #todo make it customizable
-	batch.draw(shader)
-
-	# restore opengl defaults
-	gpu.state.blend_set(original_blend)
-	gpu.state.depth_mask_set(original_depth_mask)
-	gpu.state.depth_test_set(original_depth_test)
