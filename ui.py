@@ -56,7 +56,7 @@ class BIM_PT_structural_actions(Panel):
         row = self.layout.row(align=True)
         row.label(text=f"{StructuralActionsData.data['total_actions']} Structural Actions Found", icon="ANIM_DATA")
         row.operator(
-                "bim.show_3d_loads",
+                "bim.show_loads",
                 text="Show loads" ,
                 icon="FILTER",
             )

@@ -32,7 +32,7 @@ bl_info = {
     "category" : "Generic"
 }
 classes = (
-    operators.LoadDecorator,
+    operators.ShowLoadsOperator,
     ui.BIM_PT_structural_actions
     )
 
