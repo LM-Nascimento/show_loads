@@ -37,7 +37,7 @@ from bpy.types import SpaceView3D
 from math import sin, pi
 from bpy_extras import view3d_utils
 
-class ShowLoadsOperator(bpy.types.Operator):
+class ShowLoads(bpy.types.Operator):
     """Draw decorations to show strucutural actions in 3d view"""
     bl_idname = "bim.show_loads"
     bl_label = "Show loads in 3D View"

@@ -34,9 +34,9 @@ class BIM_UL_structural_activities(UIList):
             row.label(text=item.applied_load_class)
 
 
-class BIM_PT_structural_actions(Panel):
-    bl_label = "Structural Actions"
-    bl_idname = "BIM_PT_structural_actions"
+class BIM_PT_show_structural_activities(Panel):
+    bl_label = "Show Loads"
+    bl_idname = "BIM_PT_show_structural_activities"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
@@ -48,13 +48,10 @@ class BIM_PT_structural_actions(Panel):
         return file and hasattr(file, "schema") and file.schema != "IFC2X3"
 
     def draw(self, context):
-        if not StructuralActionsData.is_loaded:
-            StructuralActionsData.load()
 
         self.props = context.scene.BIMStructuralProperties
 
         row = self.layout.row(align=True)
-        row.label(text=f"{StructuralActionsData.data['total_actions']} Structural Actions Found", icon="ANIM_DATA")
         row.operator(
                 "bim.show_loads",
                 text="Show loads" ,
